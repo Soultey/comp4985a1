@@ -1,5 +1,6 @@
-//ID: A01084766
+// ID: A01084766
 
-int main(){
+int main(void)
+{
     return 0;
 }
