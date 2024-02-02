@@ -4,11 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+// #include <ndbm.h> database header
 
 #define BUFFER_SIZE 1024
 #define TEN 10
 #define BIG 655356
 #define FIVE 5
+#define URI 255
 
 #ifndef SOCK_CLOEXEC
     #pragma GCC diagnostic push
@@ -82,9 +84,11 @@ int main(int argc, const char *argv[])
     {
         int     client_socket;
         ssize_t bytes_received;
-        ssize_t bytes_sent;
 
-        const char *response = "HTTP/1.0 200 OK\r\nContent-Length: 12\r\n\r\nHello, World!";
+        // Parse HTTP request
+        char method[TEN];
+        char uri[URI];
+        char http_version[TEN];
 
         // Accept a client connection
         client_address_len = sizeof(client_address);
@@ -98,8 +102,8 @@ int main(int argc, const char *argv[])
         printf("Client connected\n");
 
         // Receive data from client
-        bytes_received = read(client_socket, buffer,
-                              sizeof(buffer) - 1);    // space for null-terminator
+        bytes_received = read(client_socket, buffer, sizeof(buffer) - 1);
+
         if(bytes_received > 0)
         {
             buffer[bytes_received] = '\0';    // Null-terminate the string
@@ -110,51 +114,41 @@ int main(int argc, const char *argv[])
             printf("Nothing received from client: %.*s\n", (int)bytes_received, buffer);
             exit(EXIT_FAILURE);
         }
-        // prints the string from client and iterates using  %.*s
-        printf("Received data from client: %.*s\n", (int)bytes_received, buffer);
-
-        // incase fedora is giving linux-like problems
-        setenv("PATH",
-               "/usr/local/bin:/usr/local/sbin:/sbin:/root:/opt/idafree-7.0:/bin:/"
-               "usr/bin",
-               1);
-
-        // Call the forker function to execute the received command
-        forker(buffer, client_socket);    // buffer contains the received command
-
-        // Send the response to the client
-
-        bytes_sent = write(client_socket, response, strlen(response));
-        if(bytes_sent == -1)
-        {
-            handle_client(client_socket);
-        }
-        // Receive data from client
-        bytes_received = read(client_socket, buffer, sizeof(buffer) - 1);
-        if(bytes_received > 0)
-        {
-            buffer[bytes_received] = '\0';    // Null-terminate the string
-        }
-        else
-        {
-            // Handle read error or closed socket
-            printf("Nothing received from client\n");
-            close(client_socket);
-            return 0;
-        }
 
         // Print the received HTTP request
         printf("Received HTTP request:\n%s\n", buffer);
 
-        // TODO: Implement parsing of HTTP requests and generating appropriate responses
+        sscanf(buffer, "%9s %254s %9s", method, uri, http_version);
 
-        // TODO: Implement handling of GET, HEAD, and POST requests
+        // Handle different HTTP methods
+        if(strcmp(method, "GET") == 0)
+        {
+            // Handle GET requests
+            printf("Received GET request for URI: %s\n", uri);
+            // TODO: Implement handling of GET requests
+            // You need to check the requested resource (URI) and send an appropriate response.
+        }
+        //        else if(strcmp(method, "HEAD") == 0)
+        //        {
+        //            // Handle HEAD requests
+        //            // TODO: Implement handling of HEAD requestsasdfasdfasdf
+        //        }
+        //        else if(strcmp(method, "POST") == 0)
+        //        {
+        //            // Handle POST requests
+        //            // TODO: Implement handling of POST requestsasdfasdfad
+        //        }
+        else
+        {
+            // Unsupported HTTP method, send a 501 Not Implemented response
+            const char *not_implemented_response = "HTTP/1.0 501 Not Implemented\r\n\r\n";
+            write(client_socket, not_implemented_response, strlen(not_implemented_response));
+        }
 
         // TODO: Implement NDBM storage with POST requests
 
         // Respond to the client
-
-        write(client_socket, response, strlen(response));
+        // TODO: Send appropriate responses based on the HTTP method
 
         // Close the client socket
         close(client_socket);
