@@ -19,8 +19,6 @@
     #pragma GCC diagnostic pop
 #endif
 
-void forker(const char *command, int client_socket);
-
 void handle_client(int client_socket);
 
 int main(int argc, const char *argv[])
@@ -123,6 +121,8 @@ int main(int argc, const char *argv[])
         // Handle different HTTP methods
         if(strcmp(method, "GET") == 0)
         {
+            const char *html_response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Hello, World!</h1></body></html>";
+            write(client_socket, html_response, strlen(html_response));
             // Handle GET requests
             printf("Received GET request for URI: %s\n", uri);
             // TODO: Implement handling of GET requests
@@ -151,37 +151,6 @@ int main(int argc, const char *argv[])
         // TODO: Send appropriate responses based on the HTTP method
 
         // Close the client socket
-        close(client_socket);
-    }
-}
-
-void forker(const char *command, int client_socket)
-{
-    // Fork a new process
-    pid_t pid = fork();
-
-    if(pid == -1)
-    {
-        perror("Fork failed");
-        exit(EXIT_FAILURE);
-    }
-    else if(pid == 0)
-    {
-        // Child process
-        // Execute the command (you might want to implement this part)
-        printf("Executing command: %s\n", command);
-        execl("/bin/sh", "sh", "-c", command, NULL);
-        perror("Exec failed");
-        exit(EXIT_FAILURE);
-    }
-    else
-    {
-        // Parent process
-        // Do any cleanup or additional processing if needed
-        // For example, you might want to wait for the child process to complete
-        waitpid(pid, NULL, 0);
-
-        // Close the client socket in the parent process
         close(client_socket);
     }
 }
