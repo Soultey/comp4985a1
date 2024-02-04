@@ -1,607 +1,266 @@
 #include <arpa/inet.h>
 #include <errno.h>
-#include <inttypes.h>
-#include <netdb.h>
-#include <netinet/in.h>
+#include <fcntl.h>
 #include <pthread.h>
-#include <signal.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
-static void          *server_input_thread(void *arg);
-static void           add_client_socket(int client_sockfd);
-static void           remove_client_socket(int client_sockfd);
-static void           broadcast_to_clients(const char *message);
-static void          *receive_messages(void *arg);
-static void           setup_signal_handler(void);
-static void           sigint_handler(int signum);
-static void           parse_arguments(int argc, char *argv[], char **ip_address, char **port);
-static void           handle_arguments(const char *binary_name, const char *ip_address, const char *port_str, in_port_t *port);
-static in_port_t      parse_in_port_t(const char *binary_name, const char *port_str);
-_Noreturn static void usage(const char *program_name, const char *message);
-static void           convert_address(const char *address, struct sockaddr_storage *addr);
-static int            socket_create(int domain, int type, int protocol);
-static void           socket_bind(int sockfd, struct sockaddr_storage *addr, in_port_t port);
-static void           start_listening(int server_fd);
-static int            socket_accept_connection(int server_fd, struct sockaddr_storage *client_addr, socklen_t *client_addr_len);
-static void           handle_connection(int client_sockfd);
-static void           socket_close(int sockfd);
-static void           socket_connect(int sockfd, struct sockaddr_storage *addr, in_port_t port);
-static void          *thread_func(void *arg);
-// static void           broadcast_to_other_clients(const char *message, int sender_sockfd);
-
-#define BASE_TEN 10
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 4096
+#define RESPONSE_BUFFER_SIZE 4096
 #define MAX_CLIENTS 10
+#define MAX_METHOD_LEN 10
+#define MAX_PATH_LEN 255
+#define MAX_PROTOCOL_LEN 10
 
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static volatile sig_atomic_t exit_flag = 0;
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static int client_sockets[MAX_CLIENTS];
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static int num_clients = 0;
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static pthread_mutex_t client_list_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-int main(int argc, char *argv[])
+// Struct for representing an HTTP request
+struct HttpRequest
 {
-    int                     opt;
-    int                     c_flag   = 0;
-    int                     a_flag   = 0;
-    char                   *address  = NULL;
-    char                   *port_str = NULL;
-    in_port_t               port;
-    int                     sockfd;
-    struct sockaddr_storage addr;
-    pthread_t               recv_thread;
-    pthread_t               server_thread;
-    opterr = 0;
+    char method[MAX_METHOD_LEN];
+    char path[MAX_PATH_LEN];
+    char protocol[MAX_PROTOCOL_LEN];
+};
 
-    // Parse command line options
-    while((opt = getopt(argc, argv, ":ac")) != -1)
+// Struct for the server environment
+struct p101_env
+{
+    pthread_mutex_t client_list_mutex;
+    int             exit_flag;
+    int             client_sockets[MAX_CLIENTS];
+    int             num_clients;
+};
+
+// Struct for handling errors (you may define it based on your assignment requirements)
+struct p101_error
+{
+    int         code;       // Error code indicating the type of error
+    const char *message;    // Error message providing more details
+};
+
+// Function to initialize an error structure
+struct p101_error initialize_error(int code, const char *message)
+{
+    struct p101_error error;
+    error.code    = code;
+    error.message = message;
+    return error;
+}
+
+// Function to print an error
+void print_error(const struct p101_error *err)
+{
+    fprintf(stderr, "Error %d: %s\n", err->code, err->message);
+}
+
+// Modify parse_http_request to accept a pointer to struct
+void parse_http_request(const char *request, struct HttpRequest *parsed_request)
+{
+    sscanf(request, "%s %s %s", parsed_request->method, parsed_request->path, parsed_request->protocol);
+}
+
+// Function to generate HTTP response
+void generate_http_response(int client_socket, const char *content)
+{
+    char response[RESPONSE_BUFFER_SIZE];
+    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n%s", strlen(content), content);
+    send(client_socket, response, strlen(response), 0);
+}
+
+// Function to handle HTTP GET request
+void handle_http_get_request(int client_fd, const char *path)
+{
+    // Example: Serve the content of the requested file
+    int file_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if(file_fd != -1)
     {
-        switch(opt)
+        struct stat file_stat;
+        fstat(file_fd, &file_stat);
+
+        // Send HTTP response headers
+        dprintf(client_fd, "HTTP/1.1 200 OK\r\nContent-Length: %lld\r\n\r\n", file_stat.st_size);
+
+        // Send file content
+        char    buffer[BUFFER_SIZE];
+        ssize_t bytes_read;
+
+        while((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0)
         {
-            case 'a':
-                a_flag = 1;
-                break;
-            case 'c':
-                c_flag = 1;
-                break;
-            default:
-                fprintf(stderr, "Invalid option or missing argument.\n");
-                usage(argv[0], "Invalid usage");
-        }
-    }
-
-    parse_arguments(argc, argv, &address, &port_str);
-    handle_arguments(argv[0], address, port_str, &port);
-
-    if(c_flag && argc - optind == 2)
-    {
-        // Client code
-        convert_address(address, &addr);
-        sockfd = socket_create(addr.ss_family, SOCK_STREAM, 0);
-        socket_connect(sockfd, &addr, port);
-
-        if(pthread_create(&recv_thread, NULL, receive_messages, (void *)&sockfd) != 0)
-        {
-            perror("Failed to create receive thread");
-            exit(EXIT_FAILURE);
+            send(client_fd, buffer, (size_t)bytes_read, 0);
         }
 
-        while(1)
-        {
-            char message[BUFFER_SIZE];
-            if(fgets(message, BUFFER_SIZE, stdin) == NULL)
-            {
-                printf("Client exiting due to EOF\n");
-                break;    // EOF or error
-            }
-            if(write(sockfd, message, strlen(message)) < 0)
-            {
-                perror("write error");
-                break;
-            }
-        }
-
-        socket_close(sockfd);
-        pthread_join(recv_thread, NULL);
-    }
-    else if(a_flag && argc - optind == 2)
-    {
-        // Server code
-        convert_address(address, &addr);
-        sockfd = socket_create(addr.ss_family, SOCK_STREAM, 0);
-        socket_bind(sockfd, &addr, port);
-        start_listening(sockfd);
-        setup_signal_handler();
-
-        if(pthread_create(&server_thread, NULL, server_input_thread, NULL) != 0)
-        {
-            perror("Failed to create server input thread");
-            exit(EXIT_FAILURE);
-        }
-
-        while(!exit_flag)
-        {
-            int                     client_sockfd;
-            struct sockaddr_storage client_addr;
-            socklen_t               client_addr_len = sizeof(client_addr);
-            int                    *new_sock;
-            pthread_t               thread_id;
-
-            client_sockfd = socket_accept_connection(sockfd, &client_addr, &client_addr_len);
-
-            if(client_sockfd == -1)
-            {
-                if(exit_flag)
-                {
-                    break;
-                }
-                continue;
-            }
-
-            add_client_socket(client_sockfd);
-            new_sock = malloc(sizeof(int));
-            if(!new_sock)
-            {
-                perror("Failed to allocate memory for new socket");
-                close(client_sockfd);
-                continue;
-            }
-
-            *new_sock = client_sockfd;
-
-            if(pthread_create(&thread_id, NULL, thread_func, (void *)new_sock) != 0)
-            {
-                perror("Failed to create thread");
-                // Consider freeing new_sock and closing client_sockfd here if thread creation fails.
-            }
-        }
-
-        pthread_join(server_thread, NULL);
-        socket_close(sockfd);
+        close(file_fd);
     }
     else
     {
-        fprintf(stderr, "Usage: %s -flag <IP Address> <Port>\n", argv[0]);
-        exit(EXIT_FAILURE);
+        // File not found
+        const char *response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        send(client_fd, response, strlen(response), 0);
     }
-
-    return EXIT_SUCCESS;
 }
 
-static void parse_arguments(int argc, char *argv[], char **ip_address, char **port)
+// Function to handle HTTP POST request
+void handle_http_post_request(int client_fd)
 {
-    if(argc - optind == 2)
+    // Example: Process POST data and send a response
+    const char *response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello POST!";
+    send(client_fd, response, strlen(response), 0);
+}
+
+// Function to handle an HTTP request
+void handle_http_request(int client_fd, const char *request)
+{
+    // Parse HTTP request
+    struct HttpRequest parsed_request;
+    parse_http_request(request, &parsed_request);
+
+    // Print the parsed HTTP request details
+    printf("Request: %s %s %s\n", parsed_request.method, parsed_request.path, parsed_request.protocol);
+    printf("Method: %s\n", parsed_request.method);
+    printf("Path: %s\n", parsed_request.path);
+    printf("Protocol: %s\n", parsed_request.protocol);
+
+    // Handle different HTTP methods
+    if(strcmp(parsed_request.method, "GET") == 0)
     {
-        *ip_address = argv[optind];
-        *port       = argv[optind + 1];
+        handle_http_get_request(client_fd, parsed_request.path);
+    }
+    else if(strcmp(parsed_request.method, "POST") == 0)
+    {
+        handle_http_post_request(client_fd);
     }
     else
     {
-        usage(argv[0], "Incorrect number of arguments");
+        // Unsupported method
+        const char *response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        send(client_fd, response, strlen(response), 0);
     }
 }
 
-static void handle_arguments(const char *binary_name, const char *ip_address, const char *port_str, in_port_t *port)
+void cleanup(struct p101_env *env, int server_fd);
+
+// Function to handle a client connection
+void *handle_connection(void *arg)
 {
-    if(ip_address == NULL)
+    struct p101_env *env = (struct p101_env *)arg;
+    char             buffer[BUFFER_SIZE];
+    ssize_t          bytes_received;
+
+    // Extract client_fd from arg
+    int client_fd = *((int *)arg);
+
+    while((bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0)
     {
-        usage(binary_name, "The IP address is required.");
+        buffer[bytes_received] = '\0';    // Ensure null-terminated string
+        pthread_mutex_lock(&env->client_list_mutex);
+        // Handle the HTTP request
+        handle_http_request(client_fd, buffer);
+        pthread_mutex_unlock(&env->client_list_mutex);
     }
 
-    if(port_str == NULL)
-    {
-        usage(binary_name, "The port is required.");
-    }
+    pthread_mutex_lock(&env->client_list_mutex);
+    // Close the socket and perform cleanup
+    close(client_fd);
+    pthread_mutex_unlock(&env->client_list_mutex);
 
-    *port = parse_in_port_t(binary_name, port_str);
+    return NULL;
 }
 
-in_port_t parse_in_port_t(const char *binary_name, const char *str)
+void cleanup(struct p101_env *env, int server_fd)
 {
-    char     *endptr;
-    uintmax_t parsed_value;
-    errno        = 0;
-    parsed_value = strtoumax(str, &endptr, BASE_TEN);
+    close(server_fd);
 
-    if(errno != 0)
+    pthread_mutex_destroy(&env->client_list_mutex);
+
+    // Close remaining client connections
+    for(int i = 0; i < env->num_clients; ++i)
     {
-        perror("Error parsing in_port_t");
+        close(env->client_sockets[i]);
+    }
+}
+
+int main(void)
+{
+    struct p101_env env;
+    env.exit_flag   = 0;
+    env.num_clients = 0;
+    pthread_mutex_init(&env.client_list_mutex, NULL);
+
+    struct sockaddr_in server_addr;    // Use sockaddr_in for IPv4
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family      = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port        = htons(8080);
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if(server_fd == -1)
+    {
+        perror("Error creating socket");
         exit(EXIT_FAILURE);
     }
 
-    // Check if there are any non-numeric characters in the input string
-    if(*endptr != '\0')
+#ifdef SOCK_CLOEXEC
+    // Use SOCK_CLOEXEC if available
+    int flags = SOCK_CLOEXEC;
+    if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &flags, sizeof(flags)) == -1)
     {
-        usage(binary_name, "Invalid characters in input.");
-    }
-
-    // Check if the parsed value is within the valid range for in_port_t
-    if(parsed_value > UINT16_MAX)
-    {
-        usage(binary_name, "in_port_t value out of range.");
-    }
-
-    return (in_port_t)parsed_value;
-}
-
-_Noreturn static void usage(const char *program_name, const char *message)
-{
-    if(message)
-    {
-        fprintf(stderr, "%s\n", message);
-    }
-    fprintf(stderr, "Usage: %s -a <IP Address> <Port> (for server mode)\n", program_name);
-    fprintf(stderr, "       %s -c <IP Address> <Port> (for client mode)\n", program_name);
-    exit(1);
-}
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-
-static void sigint_handler(int signum)
-{
-    if(signum == SIGINT || signum == SIGTSTP)
-    {
-        exit_flag = 1;
-    }
-}
-
-#pragma GCC diagnostic pop
-
-static void convert_address(const char *address, struct sockaddr_storage *addr)
-{
-    memset(addr, 0, sizeof(*addr));
-
-    if(inet_pton(AF_INET, address, &(((struct sockaddr_in *)addr)->sin_addr)) == 1)
-    {
-        addr->ss_family = AF_INET;
-    }
-    else if(inet_pton(AF_INET6, address, &(((struct sockaddr_in6 *)addr)->sin6_addr)) == 1)
-    {
-        addr->ss_family = AF_INET6;
-    }
-    else
-    {
-        fprintf(stderr, "%s is not an IPv4 or an IPv6 address\n", address);
+        perror("Error setting SO_REUSEADDR");
+        cleanup(&env, server_fd);
         exit(EXIT_FAILURE);
     }
-}
-
-static int socket_create(int domain, int type, int protocol)
-{
-    int sockfd;
-    sockfd = socket(domain, type, protocol);
-
-    if(sockfd == -1)
+#else
+    // Fall back to fcntl for setting FD_CLOEXEC
+    if(fcntl(server_fd, F_SETFD, FD_CLOEXEC) == -1)
     {
-        perror("Socket creation failed");
+        perror("Error setting close-on-exec flag");
+        cleanup(&env, server_fd);
         exit(EXIT_FAILURE);
     }
-
-    return sockfd;
-}
-
-static void socket_bind(int sockfd, struct sockaddr_storage *addr, in_port_t port)
-{
-    char      addr_str[INET6_ADDRSTRLEN];
-    socklen_t addr_len;
-    void     *vaddr;
-    in_port_t net_port;
-    net_port = htons(port);
-
-    if(addr->ss_family == AF_INET)
-    {
-        struct sockaddr_in *ipv4_addr;
-        ipv4_addr           = (struct sockaddr_in *)addr;
-        addr_len            = sizeof(*ipv4_addr);
-        ipv4_addr->sin_port = net_port;
-        vaddr               = (void *)&(((struct sockaddr_in *)addr)->sin_addr);
-    }
-    else if(addr->ss_family == AF_INET6)
-    {
-        struct sockaddr_in6 *ipv6_addr;
-        ipv6_addr            = (struct sockaddr_in6 *)addr;
-        addr_len             = sizeof(*ipv6_addr);
-        ipv6_addr->sin6_port = net_port;
-        vaddr                = (void *)&(((struct sockaddr_in6 *)addr)->sin6_addr);
-    }
-    else
-    {
-        fprintf(stderr,
-                "Internal error: addr->ss_family must be AF_INET or AF_INET6, was: "
-                "%d\n",
-                addr->ss_family);
-        exit(EXIT_FAILURE);
-    }
-
-    if(inet_ntop(addr->ss_family, vaddr, addr_str, sizeof(addr_str)) == NULL)
-    {
-        perror("inet_ntop");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Binding to: %s:%u\n", addr_str, port);
-
-    if(bind(sockfd, (struct sockaddr *)addr, addr_len) == -1)
-    {
-        perror("Binding failed");
-        fprintf(stderr, "Error code: %d\n", errno);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Bound to socket: %s:%u\n", addr_str, port);
-}
-
-static void start_listening(int server_fd)
-{
-    if(listen(server_fd, 1) == -1)
-    {
-        perror("listen failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Listening for incoming connections...\n");
-}
-
-static int socket_accept_connection(int server_fd, struct sockaddr_storage *client_addr, socklen_t *client_addr_len)
-{
-    int  client_fd;
-    char client_host[NI_MAXHOST];
-    char client_service[NI_MAXSERV];
-    errno     = 0;
-    client_fd = accept(server_fd, (struct sockaddr *)client_addr, client_addr_len);
-
-    if(client_fd == -1)
-    {
-        if(errno != EINTR)
-        {
-            perror("accept failed");
-        }
-        return -1;
-    }
-
-    if(getnameinfo((struct sockaddr *)client_addr, *client_addr_len, client_host, NI_MAXHOST, client_service, NI_MAXSERV, 0) == 0)
-    {
-        printf("Accepted a new connection from %s:%s\n", client_host, client_service);
-    }
-    else
-    {
-        printf("Unable to get client information\n");
-    }
-
-    return client_fd;
-}
-
-static void setup_signal_handler(void)
-{
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-
-#if defined(__clang__)
-    #pragma clang diagnostic push
-    #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
-#endif
-    sa.sa_handler = sigint_handler;
-#if defined(__clang__)
-    #pragma clang diagnostic pop
 #endif
 
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-
-    if(sigaction(SIGINT, &sa, NULL) == -1 || sigaction(SIGTERM, &sa, NULL) == -1 || sigaction(SIGTSTP, &sa, NULL) == -1)
+    if(bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1)
     {
-        perror("Error setting up signal handler");
+        perror("Error binding socket");
+        cleanup(&env, server_fd);
         exit(EXIT_FAILURE);
     }
-}
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
-
-static void handle_connection(int client_sockfd)
-{
-    char    buffer[BUFFER_SIZE];
-    ssize_t nread;
-
-    while((nread = read(client_sockfd, buffer, sizeof(buffer) - 1)) > 0)
+    if(listen(server_fd, SOMAXCONN) == -1)
     {
-        buffer[nread] = '\0';
+        perror("Error listening on socket");
+        cleanup(&env, server_fd);
+        exit(EXIT_FAILURE);
+    }
 
-        //    broadcast_to_other_clients(buffer, client_sockfd);
-        printf("Received: %s\n", buffer);
+    while(!env.exit_flag)
+    {
+        struct sockaddr_storage client_addr;
+        socklen_t               client_addr_len = sizeof(client_addr);
+        int                     client_fd       = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
 
-        ssize_t nwritten = 0;
-        size_t  to_write = (size_t)nread;
-
-        while(nwritten < nread)
+        if(env.num_clients < MAX_CLIENTS)
         {
-            ssize_t nw = write(client_sockfd, buffer + nwritten, to_write);
-            if(nw < 0)
-            {
-                if(errno != EINTR)
-                {
-                    perror("write error");
-                    break;
-                }
-            }
-            else
-            {
-                nwritten += nw;
-                to_write -= (size_t)nw;
-            }
-        }
-    }
+            pthread_mutex_lock(&env.client_list_mutex);
+            env.client_sockets[env.num_clients++] = client_fd;
+            pthread_mutex_unlock(&env.client_list_mutex);
 
-    if(nread == -1)
-    {
-        perror("read error");
-    }
-
-    remove_client_socket(client_sockfd);
-    close(client_sockfd);
-}
-
-#pragma GCC diagnostic pop
-
-static void socket_connect(int sockfd, struct sockaddr_storage *addr, in_port_t port)
-{
-    char      addr_str[INET6_ADDRSTRLEN];
-    in_port_t net_port;
-    socklen_t addr_len;
-
-    if(inet_ntop(addr->ss_family, addr->ss_family == AF_INET ? (void *)&(((struct sockaddr_in *)addr)->sin_addr) : (void *)&(((struct sockaddr_in6 *)addr)->sin6_addr), addr_str, sizeof(addr_str)) == NULL)
-    {
-        perror("inet_ntop");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Connecting to: %s:%u\n", addr_str, port);
-    net_port = htons(port);
-
-    if(addr->ss_family == AF_INET)
-    {
-        struct sockaddr_in *ipv4_addr;
-        ipv4_addr           = (struct sockaddr_in *)addr;
-        ipv4_addr->sin_port = net_port;
-        addr_len            = sizeof(struct sockaddr_in);
-    }
-    else if(addr->ss_family == AF_INET6)
-    {
-        struct sockaddr_in6 *ipv6_addr;
-        ipv6_addr            = (struct sockaddr_in6 *)addr;
-        ipv6_addr->sin6_port = net_port;
-        addr_len             = sizeof(struct sockaddr_in6);
-    }
-    else
-    {
-        fprintf(stderr, "Invalid address family: %d\n", addr->ss_family);
-        exit(EXIT_FAILURE);
-    }
-
-    if(connect(sockfd, (struct sockaddr *)addr, addr_len) == -1)
-    {
-        const char *msg;
-
-        msg = strerror(errno);
-        fprintf(stderr, "Error: connect (%d): %s\n", errno, msg);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Connected to: %s:%u\n", addr_str, port);
-}
-
-static void socket_close(int sockfd)
-{
-    if(close(sockfd) == -1)
-    {
-        perror("Error closing socket");
-        exit(EXIT_FAILURE);
-    }
-}
-
-static void *thread_func(void *arg)
-{
-    int sock = *((int *)arg);
-    free(arg);    // Ensure to free the dynamically allocated memory
-    handle_connection(sock);
-    pthread_exit(NULL);    // Use pthread_exit for clean thread termination
-}
-
-static void *receive_messages(void *arg)
-{
-    int  sockfd = *((int *)arg);
-    char buffer[BUFFER_SIZE];
-
-    while(1)
-    {
-        ssize_t nread = read(sockfd, buffer, BUFFER_SIZE - 1);
-        if(nread > 0)
-        {
-            buffer[nread] = '\0';
-            printf("%s", buffer);    // Print messages received from server
-        }
-        else if(nread == 0)
-        {
-            printf("Connection closed by server.\n");
-            break;
+            pthread_t thread;
+            pthread_create(&thread, NULL, handle_connection, &env);
+            pthread_detach(thread);
         }
         else
         {
-            perror("read error");
-            break;
+            // Max clients reached, reject connection
+            close(client_fd);
         }
     }
 
-    return NULL;
-}
+    // Perform cleanup on graceful shutdown or errors
+    cleanup(&env, server_fd);
 
-// Function to add client socket to the list
-static void add_client_socket(int client_sockfd)
-{
-    pthread_mutex_lock(&client_list_mutex);
-
-    if(num_clients < MAX_CLIENTS)
-    {
-        client_sockets[num_clients++] = client_sockfd;
-    }
-
-    pthread_mutex_unlock(&client_list_mutex);
-}
-
-// Function to remove a client socket from the list
-static void remove_client_socket(int client_sockfd)
-{
-    pthread_mutex_lock(&client_list_mutex);
-
-    for(int i = 0; i < num_clients; i++)
-    {
-        if(client_sockets[i] == client_sockfd)
-        {
-            client_sockets[i] = client_sockets[num_clients - 1];
-            num_clients--;
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&client_list_mutex);
-}
-
-// Function to send a message to all clients
-static void broadcast_to_clients(const char *message)
-{
-    pthread_mutex_lock(&client_list_mutex);
-
-    for(int i = 0; i < num_clients; i++)
-    {
-        write(client_sockets[i], message, strlen(message));
-    }
-
-    pthread_mutex_unlock(&client_list_mutex);
-}
-
-static void *server_input_thread(void *arg)
-{
-    char buffer[BUFFER_SIZE];
-    (void)arg;
-
-    while(fgets(buffer, BUFFER_SIZE, stdin) != NULL)
-    {
-        broadcast_to_clients(buffer);
-    }
-
-    printf("Server exiting due to EOF\n");
-    exit_flag = 1;
-
-    return NULL;
+    return EXIT_SUCCESS;
 }
