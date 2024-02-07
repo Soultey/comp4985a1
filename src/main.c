@@ -82,14 +82,15 @@ void handle_http_get_request(int client_fd, const char *path)
 
     if(strcmp(path, "/") == 0)
     {
-        path = "./src/index.html";
-        //  path = "index.html";
-
+        // path = "comp4985a1/src/index.html";
+        //   path = "./src/index.html";
+        path = "index.html"; //needs to be in the build directory
     }
 
     printf("Serving file: %s\n", path);
 
     int file_fd = open(path, O_RDONLY | O_CLOEXEC);
+
     if(file_fd != -1)
     {
         struct stat file_stat;
@@ -98,7 +99,40 @@ void handle_http_get_request(int client_fd, const char *path)
         char    buffer[BUFFER_SIZE];
         ssize_t bytes_read;
 
-        generate_http_response(client_fd, "");    // Empty content for now
+        // generate_http_response(client_fd, "");    // Empty content for now
+
+        FILE *file = fopen(path, "re");
+        if(file != NULL)
+        {
+            fseek(file, 0, SEEK_END);
+            long file_size = ftell(file);
+            fseek(file, 0, SEEK_SET);
+
+            // cast the file_size to size_t
+            char *content = (char *)malloc((size_t)file_size + 1);
+            if(content == NULL)
+            {
+                // memory allocation
+                perror("Error: Memory allocation failed");
+                fclose(file);      // close file before leaving
+                close(file_fd);    // close file d
+                return;            // Exit function
+            }
+            fread(content, 1, (size_t)file_size, file);
+            content[file_size] = '\0';
+
+            fclose(file);
+
+            // Generate HTTP response with the content of index.html
+            generate_http_response(client_fd, content);
+
+            free(content);
+        }
+        else
+        {
+            // Handle error opening file
+            perror("Error: Unable to open file");
+        }
 
         while((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0)
         {
@@ -109,7 +143,8 @@ void handle_http_get_request(int client_fd, const char *path)
     }
     else
     {
-        const char *response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        perror("Error: Unable to open file");
+        const char *response = "HTTP/1.1 404 Not Found\r\nContent-Length: 15\r\n\r\n404 Not Found\n";
         send(client_fd, response, strlen(response), 0);
     }
 }
