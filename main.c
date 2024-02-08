@@ -1,5 +1,5 @@
 #include <arpa/inet.h>
-#include <errno.h>
+// #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -7,7 +7,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/types.h>
+// #include <sys/types.h>
 #include <unistd.h>
 
 #define BUFFER_SIZE 4096
@@ -16,6 +16,16 @@
 #define MAX_METHOD_LEN 10
 #define MAX_PATH_LEN 255
 #define MAX_PROTOCOL_LEN 10
+
+#define STRINGIFY(x) STRINGIFY_HELPER(x)
+#define STRINGIFY_HELPER(x) #x
+
+#ifndef SOCK_CLOEXEC
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wunused-macros"
+    #define SOCK_CLOEXEC 0
+    #pragma GCC diagnostic pop
+#endif
 
 // Struct for representing an HTTP request
 struct HttpRequest
@@ -41,6 +51,17 @@ struct p101_error
     const char *message;    // Error message providing more details
 };
 
+void  print_error(const struct p101_error *err);
+void  parse_http_request(const char *request, struct HttpRequest *parsed_request);
+void  generate_http_response(int client_socket, const char *content);
+void  handle_http_get_request(int client_fd, const char *path);
+void  handle_http_post_request(int client_fd);
+void  handle_http_request(int client_fd, const char *request);
+void *handle_connection(void *arg);
+
+void              cleanup(struct p101_env *env, int server_fd);
+struct p101_error initialize_error(int code, const char *message);
+
 // Function to initialize an error structure
 struct p101_error initialize_error(int code, const char *message)
 {
@@ -57,9 +78,10 @@ void print_error(const struct p101_error *err)
 }
 
 // Modify parse_http_request to accept a pointer to struct
+
 void parse_http_request(const char *request, struct HttpRequest *parsed_request)
 {
-    sscanf(request, "%s %s %s", parsed_request->method, parsed_request->path, parsed_request->protocol);
+    sscanf(request, "%" STRINGIFY(MAX_METHOD_LEN) "s %" STRINGIFY(MAX_PATH_LEN) "s %" STRINGIFY(MAX_PROTOCOL_LEN) "s", parsed_request->method, parsed_request->path, parsed_request->protocol);
 }
 
 // Function to generate HTTP response
@@ -77,15 +99,14 @@ void handle_http_get_request(int client_fd, const char *path)
     int file_fd = open(path, O_RDONLY | O_CLOEXEC);
     if(file_fd != -1)
     {
+        // Send file content
+        char        buffer[BUFFER_SIZE];
+        ssize_t     bytes_read;
         struct stat file_stat;
         fstat(file_fd, &file_stat);
 
         // Send HTTP response headers
         dprintf(client_fd, "HTTP/1.1 200 OK\r\nContent-Length: %lld\r\n\r\n", file_stat.st_size);
-
-        // Send file content
-        char    buffer[BUFFER_SIZE];
-        ssize_t bytes_read;
 
         while((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0)
         {
@@ -140,8 +161,6 @@ void handle_http_request(int client_fd, const char *request)
     }
 }
 
-void cleanup(struct p101_env *env, int server_fd);
-
 // Function to handle a client connection
 void *handle_connection(void *arg)
 {
@@ -184,18 +203,21 @@ void cleanup(struct p101_env *env, int server_fd)
 
 int main(void)
 {
-    struct p101_env env;
+    struct sockaddr_in server_addr;    // Use sockaddr_in for IPv4
+    struct p101_env    env;
+    int                server_fd;
+    int                flags;
+
     env.exit_flag   = 0;
     env.num_clients = 0;
     pthread_mutex_init(&env.client_list_mutex, NULL);
 
-    struct sockaddr_in server_addr;    // Use sockaddr_in for IPv4
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family      = AF_INET;
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     server_addr.sin_port        = htons(8080);
 
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    server_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 
     if(server_fd == -1)
     {
@@ -205,7 +227,8 @@ int main(void)
 
 #ifdef SOCK_CLOEXEC
     // Use SOCK_CLOEXEC if available
-    int flags = SOCK_CLOEXEC;
+
+    flags = SOCK_CLOEXEC;
     if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &flags, sizeof(flags)) == -1)
     {
         perror("Error setting SO_REUSEADDR");
@@ -244,11 +267,12 @@ int main(void)
 
         if(env.num_clients < MAX_CLIENTS)
         {
+            pthread_t thread;
+
             pthread_mutex_lock(&env.client_list_mutex);
             env.client_sockets[env.num_clients++] = client_fd;
             pthread_mutex_unlock(&env.client_list_mutex);
 
-            pthread_t thread;
             pthread_create(&thread, NULL, handle_connection, &env);
             pthread_detach(thread);
         }
