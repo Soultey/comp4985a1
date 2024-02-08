@@ -1,5 +1,4 @@
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,10 +116,57 @@ void handle_client(int client_socket)
     // Print the received HTTP request
     printf("Received HTTP request:\n%s\n", buffer);
 
-    // Check if it's a GET request
+    // Check if it's a GET or HEAD request
     if(strstr(buffer, "GET") == buffer)
     {
         send_file(client_socket);
+    }
+    else if(strstr(buffer, "HEAD") == buffer)
+    {
+        // Open the HTML file
+        FILE   *html_file;
+        long    content_length;
+        char    response_header[BUFFER_SIZE];
+        ssize_t bytes_sent;
+
+        html_file = fopen(HTML_FILE, "rbe");
+        if(html_file == NULL)
+        {
+            perror("Error opening HTML file");
+            close(client_socket);
+            return;
+        }
+
+        // Move to the end of the file to get its size
+        if(fseek(html_file, 0, SEEK_END) != 0)
+        {
+            perror("Error seeking to end of HTML file");
+            fclose(html_file);
+            close(client_socket);
+            return;
+        }
+
+        // Get the size of the file
+        content_length = ftell(html_file);
+
+        // Move back to the beginning of the file
+        if(fseek(html_file, 0, SEEK_SET) != 0)
+        {
+            perror("Error seeking to beginning of HTML file");
+            fclose(html_file);
+            close(client_socket);
+            return;
+        }
+
+        // Send response headers including Content-Length
+        snprintf(response_header, BUFFER_SIZE, "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: %ld\r\n\r\n", content_length);
+        bytes_sent = write(client_socket, response_header, strlen(response_header));
+        if(bytes_sent == -1)
+        {
+            perror("Error sending response to client");
+        }
+
+        fclose(html_file);
     }
     else
     {
@@ -154,7 +200,6 @@ void send_file(int client_socket)
     }
 
     // Open the HTML file
-
     html_file = fopen(HTML_FILE, "re");    // Open the file here
 
     if(html_file == NULL)
@@ -165,7 +210,6 @@ void send_file(int client_socket)
     }
 
     // Read and send the HTML file contents
-
     while((html_bytes_read = (ssize_t)fread(html_buffer, 1, sizeof(html_buffer), html_file)) > 0)
     {
         bytes_sent = write(client_socket, html_buffer, (size_t)html_bytes_read);
@@ -198,3 +242,5 @@ int main(int argc, const char *argv[])
 
     start_server(server_ip, (int)port);
 }
+//Post with curl -X POST -d "username=myusername&password=mypassword" http://your-server-address:port/path/to/post/endpoint
+
