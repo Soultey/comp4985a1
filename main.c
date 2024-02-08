@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <ndbm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,8 @@
 #define TEN 10
 #define FIVE 5
 #define HTML_FILE "/Users/alex/Documents/comp4981a1/comp4985a1/index.html"
+#define RWMODE 0666
+#define HUNDO 100
 
 #ifndef SOCK_CLOEXEC
     #pragma GCC diagnostic push
@@ -21,7 +24,10 @@ void start_server(const char *server_ip, int server_port) __attribute__((noretur
 int  create_server_socket(const char *server_ip, int server_port);
 void accept_client_connections(int server_socket) __attribute__((noreturn));
 void handle_client(int client_socket);
+void handle_post_request(int client_socket, const char *buffer);
+void send_response(int client_socket, const char *response);
 void send_file(int client_socket);
+void retrieve_data_and_send_response(int client_socket, const char *username);
 
 // Start the server
 void start_server(const char *server_ip, int server_port)
@@ -116,57 +122,33 @@ void handle_client(int client_socket)
     // Print the received HTTP request
     printf("Received HTTP request:\n%s\n", buffer);
 
-    // Check if it's a GET or HEAD request
+    // Check if it's a GET request
     if(strstr(buffer, "GET") == buffer)
     {
-        send_file(client_socket);
+        // Check if the request is for retrieving data from the database
+        if(strstr(buffer, "/retrieve/") != NULL)
+        {
+            // Extract the username from the URL
+            const char *username_start = strstr(buffer, "/retrieve/") + strlen("/retrieve/");
+            char        username[HUNDO];
+            sscanf(username_start, "%99[^ ]", username);
+
+            // Call a function to retrieve data from the database based on the username
+            retrieve_data_and_send_response(client_socket, username);
+        }
+        else
+        {
+            // Handle regular GET request
+            send_file(client_socket);
+        }
+    }
+    else if(strstr(buffer, "POST") == buffer)
+    {
+        handle_post_request(client_socket, buffer);
     }
     else if(strstr(buffer, "HEAD") == buffer)
     {
-        // Open the HTML file
-        FILE   *html_file;
-        long    content_length;
-        char    response_header[BUFFER_SIZE];
-        ssize_t bytes_sent;
-
-        html_file = fopen(HTML_FILE, "rbe");
-        if(html_file == NULL)
-        {
-            perror("Error opening HTML file");
-            close(client_socket);
-            return;
-        }
-
-        // Move to the end of the file to get its size
-        if(fseek(html_file, 0, SEEK_END) != 0)
-        {
-            perror("Error seeking to end of HTML file");
-            fclose(html_file);
-            close(client_socket);
-            return;
-        }
-
-        // Get the size of the file
-        content_length = ftell(html_file);
-
-        // Move back to the beginning of the file
-        if(fseek(html_file, 0, SEEK_SET) != 0)
-        {
-            perror("Error seeking to beginning of HTML file");
-            fclose(html_file);
-            close(client_socket);
-            return;
-        }
-
-        // Send response headers including Content-Length
-        snprintf(response_header, BUFFER_SIZE, "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: %ld\r\n\r\n", content_length);
-        bytes_sent = write(client_socket, response_header, strlen(response_header));
-        if(bytes_sent == -1)
-        {
-            perror("Error sending response to client");
-        }
-
-        fclose(html_file);
+        // Handle HEAD request
     }
     else
     {
@@ -183,14 +165,151 @@ void handle_client(int client_socket)
     close(client_socket);
 }
 
-// Send HTML file to client
+void retrieve_data_and_send_response(int client_socket, const char *username)
+{
+    DBM  *db;
+    datum key;
+    datum value;
+    char *username_copy = NULL;
+
+    // Open the NDBM database
+    db = dbm_open("database.db", O_RDONLY, RWMODE);
+
+    if(!db)
+    {
+        perror("Error opening database");
+        send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
+        return;
+    }
+
+    // Allocate memory for the username copy (include space for null terminator)
+    username_copy = (char *)malloc(strlen(username) + 1);
+    if(username_copy == NULL)
+    {
+        perror("Error allocating memory");
+        send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
+        dbm_close(db);
+        return;
+    }
+
+    // Copy the username to avoid accessing the original string after potential deallocation
+    strcpy(username_copy, username);
+
+    // Lookup the username in the database
+    key.dptr  = username_copy;    // Use the copy
+    key.dsize = strlen(username_copy);
+    value     = dbm_fetch(db, key);
+
+    // Check if the username was found
+    if(value.dptr)
+    {
+        // Calculate the length of the response message
+        size_t response_length = strlen("HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nUsername: ") + strlen(username) + strlen("\nPassword: ") + strlen((char *)value.dptr) + 1;
+
+        // Allocate memory for the response
+        char *response = (char *)malloc(response_length);
+        if(response == NULL)
+        {
+            perror("Error allocating memory");
+            send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
+            return;
+        }
+
+        // Construct the response message
+        snprintf(response, response_length, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nUsername: %s\nPassword: %s\n", username, (char *)value.dptr);
+
+        // Send the response
+        send_response(client_socket, response);
+
+        // Free dynamically allocated memory
+        free(response);
+    }
+    else
+    {
+        // Username not found
+        send_response(client_socket, "HTTP/1.0 404 Not Found\r\n\r\n");
+    }
+
+    dbm_close(db);
+
+    // Free the allocated memory for the username copy
+    free(username_copy);
+}
+
+void handle_post_request(int client_socket, const char *buffer)
+{
+    // Declare variables at the beginning
+    char username[HUNDO];
+    char password[HUNDO];
+
+    // Extract POST data
+    char *post_data_start = strstr(buffer, "\r\n\r\n");
+    if(post_data_start != NULL)
+    {
+        DBM  *db;
+        datum key;
+        datum value;
+
+        const char response_header[] = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
+
+        post_data_start += 4;    // Move past the "\r\n\r\n"
+        printf("Received POST data:\n%s\n", post_data_start);
+
+        // Parse POST data to extract parameters
+        sscanf(post_data_start, "username=%99[^&]&password=%99s", username, password);
+
+        // Open the NDBM database
+        db = dbm_open("database.db", O_CREAT | O_RDWR, RWMODE);
+        if(!db)
+        {
+            perror("Error opening database");
+            send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
+            return;
+        }
+
+        // Store the username and password in the database
+        key.dptr    = username;
+        key.dsize   = strlen(username);
+        value.dptr  = password;
+        value.dsize = strlen(password);
+
+        if(dbm_store(db, key, value, DBM_REPLACE) != 0)
+        {
+            perror("Error storing data in database");
+            send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
+            dbm_close(db);
+            return;
+        }
+
+        dbm_close(db);
+
+        // Send confirmation response
+        send_response(client_socket, response_header);
+    }
+    else
+    {
+        // Malformed POST request, send a 400 Bad Request response
+        const char bad_request_response[] = "HTTP/1.0 400 Bad Request\r\n\r\n";
+        send_response(client_socket, bad_request_response);
+    }
+}
+
+void send_response(int client_socket, const char *response)
+{
+    ssize_t bytes_sent = write(client_socket, response, strlen(response));
+    if(bytes_sent == -1)
+    {
+        perror("Error sending response to client");
+    }
+}
+
 void send_file(int client_socket)
 {
-    const char *response_header = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
-    ssize_t     bytes_sent      = write(client_socket, response_header, strlen(response_header));
-    char        html_buffer[BUFFER_SIZE];
-    ssize_t     html_bytes_read;
-    FILE       *html_file;
+    const char response_header[] = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
+    ssize_t    bytes_sent        = write(client_socket, response_header, strlen(response_header));
+    char       html_buffer[BUFFER_SIZE];
+    size_t     html_bytes_read;    // Change ssize_t to size_t
+    FILE      *html_file;
 
     if(bytes_sent == -1)
     {
@@ -200,8 +319,7 @@ void send_file(int client_socket)
     }
 
     // Open the HTML file
-    html_file = fopen(HTML_FILE, "re");    // Open the file here
-
+    html_file = fopen(HTML_FILE, "re");    // Use "r" instead of "re"
     if(html_file == NULL)
     {
         perror("Error opening HTML file");
@@ -210,9 +328,9 @@ void send_file(int client_socket)
     }
 
     // Read and send the HTML file contents
-    while((html_bytes_read = (ssize_t)fread(html_buffer, 1, sizeof(html_buffer), html_file)) > 0)
+    while((html_bytes_read = fread(html_buffer, 1, sizeof(html_buffer), html_file)) > 0)
     {
-        bytes_sent = write(client_socket, html_buffer, (size_t)html_bytes_read);
+        bytes_sent = write(client_socket, html_buffer, html_bytes_read);
         if(bytes_sent == -1)
         {
             perror("Error sending response to client");
@@ -242,5 +360,3 @@ int main(int argc, const char *argv[])
 
     start_server(server_ip, (int)port);
 }
-//TODO: Post with curl -X POST -d "username=myusername&password=mypassword" http://your-server-address:port/path/to/post/endpoint
-
