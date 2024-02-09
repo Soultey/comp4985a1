@@ -133,7 +133,7 @@ void handle_http_get_request(int client_fd, const char *path)
 
         close(file_fd);
     }
-    else
+    if (strcmp(path, "/favicon.ico") != 0)
     {
         perror("Error: Unable to open file");
         const char *response = "HTTP/1.1 404 Not Found\r\nContent-Length: 15\r\n\r\n404 Not Found\n";
@@ -151,6 +151,7 @@ void handle_http_post_request(int client_fd, const char *post_data)
         return;
     }
 
+    // curl -X POST -d "key1=value1&key2=value2" http://localhost:8080/
     // Parse POST data
     // Example: key1=value1&key2=value2
     char *saveptr;
