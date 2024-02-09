@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <ndbm.h>
 
 #ifndef SOCK_CLOEXEC
     #pragma GCC diagnostic push
@@ -21,6 +22,8 @@
 #define MAX_METHOD_LEN 10
 #define MAX_PATH_LEN 255
 #define MAX_PROTOCOL_LEN 10
+#define DB_FILE "data.db"
+#define DB_FILE_PERMISSION 0666
 
 // Forward declarations
 struct HttpRequest;
@@ -28,7 +31,7 @@ struct p101_env;
 void  parse_http_request(const char *request, struct HttpRequest *parsed_request);
 void  generate_http_response(int client_socket, const char *content);
 void  handle_http_get_request(int client_fd, const char *path);
-void  handle_http_post_request(int client_fd);
+void  handle_http_post_request(int client_fd, const char *post_data);
 void  handle_http_request(int client_fd, const char *request);
 void  cleanup(struct p101_env *env, int server_fd);
 void *handle_connection(void *arg);
@@ -76,15 +79,9 @@ void handle_http_get_request(int client_fd, const char *path)
 {
     printf("Handling GET request for path: %s\n", path);
 
-    // Send a simple HTML response
-    //    const char *html_content = "<html><body><h1>Hello, World!</h1></body></html>";
-    //    generate_http_response(client_fd, html_content);
-
     if(strcmp(path, "/") == 0)
     {
-        // path = "comp4985a1/src/index.html";
-        //   path = "./src/index.html";
-        path = "index.html"; //needs to be in the build directory
+        path = "index.html";    // needs to be in the build directory
     }
 
     printf("Serving file: %s\n", path);
@@ -99,8 +96,6 @@ void handle_http_get_request(int client_fd, const char *path)
         char    buffer[BUFFER_SIZE];
         ssize_t bytes_read;
 
-        // generate_http_response(client_fd, "");    // Empty content for now
-
         FILE *file = fopen(path, "re");
         if(file != NULL)
         {
@@ -112,25 +107,22 @@ void handle_http_get_request(int client_fd, const char *path)
             char *content = (char *)malloc((size_t)file_size + 1);
             if(content == NULL)
             {
-                // memory allocation
                 perror("Error: Memory allocation failed");
-                fclose(file);      // close file before leaving
-                close(file_fd);    // close file d
-                return;            // Exit function
+                fclose(file);
+                close(file_fd);
+                return;
             }
             fread(content, 1, (size_t)file_size, file);
             content[file_size] = '\0';
 
             fclose(file);
 
-            // Generate HTTP response with the content of index.html
             generate_http_response(client_fd, content);
 
             free(content);
         }
         else
         {
-            // Handle error opening file
             perror("Error: Unable to open file");
         }
 
@@ -150,8 +142,44 @@ void handle_http_get_request(int client_fd, const char *path)
 }
 
 // Handle HTTP POST request function
-void handle_http_post_request(int client_fd)
+void handle_http_post_request(int client_fd, const char *post_data)
 {
+    // Open NDBM database
+    DBM *db = dbm_open(DB_FILE, O_RDWR | O_CREAT, DB_FILE_PERMISSION);
+    if (!db) {
+        perror("Error opening database");
+        return;
+    }
+
+    // Parse POST data
+    // Example: key1=value1&key2=value2
+    char *saveptr;
+    char *data_copy = strdup(post_data); // Make a copy since strtok modifies the string
+    char *token = strtok_r(data_copy, "&", &saveptr);
+    while (token != NULL) {
+        char *key = strtok_r(token, "=", &saveptr);
+        char *value = strtok_r(NULL, "=", &saveptr);
+
+        // Store data in NDBM database
+        datum db_key;
+        datum db_value;
+        db_key.dptr = key;
+        db_key.dsize = strlen(key);
+        db_value.dptr = value;
+        db_value.dsize = strlen(value);
+        if (dbm_store(db, db_key, db_value, DBM_REPLACE) != 0) {
+            perror("Error storing data in database");
+            dbm_close(db);
+            free(data_copy);
+            return;
+        }
+
+        token = strtok_r(NULL, "&", &saveptr);
+    }
+    free(data_copy);
+    dbm_close(db);
+
+    // Send response back to client
     const char *response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello POST!";
     send(client_fd, response, strlen(response), 0);
 }
@@ -170,7 +198,7 @@ void handle_http_request(int client_fd, const char *request)
     }
     else if(strcmp(parsed_request.method, "POST") == 0)
     {
-        handle_http_post_request(client_fd);
+        handle_http_post_request(client_fd, request);
     }
     else
     {
