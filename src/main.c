@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <ndbm.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,7 +8,6 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <ndbm.h>
 
 #ifndef SOCK_CLOEXEC
     #pragma GCC diagnostic push
@@ -133,7 +133,7 @@ void handle_http_get_request(int client_fd, const char *path)
 
         close(file_fd);
     }
-    if (strcmp(path, "/favicon.ico") != 0)
+    if(strcmp(path, "/favicon.ico") != 0)
     {
         perror("Error: Unable to open file");
         const char *response = "HTTP/1.1 404 Not Found\r\nContent-Length: 15\r\n\r\n404 Not Found\n";
@@ -146,7 +146,8 @@ void handle_http_post_request(int client_fd, const char *post_data)
 {
     // Open NDBM database
     DBM *db = dbm_open(DB_FILE, O_RDWR | O_CREAT, DB_FILE_PERMISSION);
-    if (!db) {
+    if(!db)
+    {
         perror("Error opening database");
         return;
     }
@@ -155,20 +156,22 @@ void handle_http_post_request(int client_fd, const char *post_data)
     // Parse POST data
     // Example: key1=value1&key2=value2
     char *saveptr;
-    char *data_copy = strdup(post_data); // Make a copy since strtok modifies the string
-    char *token = strtok_r(data_copy, "&", &saveptr);
-    while (token != NULL) {
-        char *key = strtok_r(token, "=", &saveptr);
+    char *data_copy = strdup(post_data);    // Make a copy since strtok modifies the string
+    char *token     = strtok_r(data_copy, "&", &saveptr);
+    while(token != NULL)
+    {
+        char *key   = strtok_r(token, "=", &saveptr);
         char *value = strtok_r(NULL, "=", &saveptr);
 
         // Store data in NDBM database
         datum db_key;
         datum db_value;
-        db_key.dptr = key;
-        db_key.dsize = strlen(key);
-        db_value.dptr = value;
+        db_key.dptr    = key;
+        db_key.dsize   = strlen(key);
+        db_value.dptr  = value;
         db_value.dsize = strlen(value);
-        if (dbm_store(db, db_key, db_value, DBM_REPLACE) != 0) {
+        if(dbm_store(db, db_key, db_value, DBM_REPLACE) != 0)
+        {
             perror("Error storing data in database");
             dbm_close(db);
             free(data_copy);
