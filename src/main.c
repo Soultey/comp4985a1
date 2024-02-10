@@ -16,6 +16,9 @@
     #pragma GCC diagnostic pop
 #endif
 
+#define INTERNAL_SERVER_ERROR_LENGTH 77
+#define MEMORY_ALLOCATION_ERROR_LENGTH 89
+#define BAD_REQUEST_ERROR_LENGTH 54
 #define BUFFER_SIZE 4096
 #define RESPONSE_BUFFER_SIZE 4096
 #define MAX_CLIENTS 10
@@ -47,10 +50,10 @@ struct HttpRequest
 // Server environment structure
 struct p101_env
 {
-    pthread_mutex_t client_list_mutex;
-    int             exit_flag;
-    int             client_sockets[MAX_CLIENTS];
-    int             num_clients;
+    pthread_mutex_t client_list_mutex;              // Mutex for protecting access to shared client_sockets and num_clients
+    int             exit_flag;                      // Flag for indicating server exit
+    int             client_sockets[MAX_CLIENTS];    // Array to store client socket descriptors
+    int             num_clients;                    // Number of active clients
 };
 
 // Parse HTTP request function
@@ -149,43 +152,78 @@ void handle_http_post_request(int client_fd, const char *post_data)
     if(!db)
     {
         perror("Error opening database");
+        send(client_fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 23\r\n\r\nDatabase error occurred", INTERNAL_SERVER_ERROR_LENGTH, 0);
         return;
     }
 
-    // curl -X POST -d "key1=value1&key2=value2" http://localhost:8080/
-    // Parse POST data
-    // Example: key1=value1&key2=value2
-    char *saveptr;
-    char *data_copy = strdup(post_data);    // Make a copy since strtok modifies the string
-    char *token     = strtok_r(data_copy, "&", &saveptr);
-    while(token != NULL)
+    // Create a mutable copy of post_data
+    char *post_data_copy = strdup(post_data);
+    if(!post_data_copy)
     {
-        char *key   = strtok_r(token, "=", &saveptr);
-        char *value = strtok_r(NULL, "=", &saveptr);
+        perror("Error: Memory allocation failed");
+        send(client_fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 30\r\n\r\nMemory allocation failed", MEMORY_ALLOCATION_ERROR_LENGTH, 0);
+        dbm_close(db);
+        return;
+    }
 
-        // Store data in NDBM database
-        datum db_key;
-        datum db_value;
-        db_key.dptr    = key;
-        db_key.dsize   = strlen(key);
-        db_value.dptr  = value;
-        db_value.dsize = strlen(value);
-        if(dbm_store(db, db_key, db_value, DBM_REPLACE) != 0)
+    // Parse POST data
+    char *key_value_pairs[MAX_CLIENTS];    // assuming a maximum number of key-value pairs
+    int   num_pairs = 0;
+
+    // Tokenize the copy of post_data by '&'
+    char *saveptr;
+    char *token = strtok_r(post_data_copy, "&", &saveptr);
+    while(token != NULL && num_pairs < MAX_CLIENTS)
+    {
+        key_value_pairs[num_pairs++] = token;
+        token                        = strtok_r(NULL, "&", &saveptr);
+    }
+
+    // Store data in NDBM database
+    for(int i = 0; i < num_pairs; ++i)
+    {
+        char *key_value  = key_value_pairs[i];
+        char *equal_sign = strchr(key_value, '=');
+        if(equal_sign != NULL)
         {
-            perror("Error storing data in database");
+            *equal_sign = '\0';    // split key and value
+            char *key   = key_value;
+            char *value = equal_sign + 1;
+
+            datum db_key;
+            datum db_value;
+            db_key.dptr    = key;
+            db_key.dsize   = strlen(key);
+            db_value.dptr  = value;
+            db_value.dsize = strlen(value);
+            if(dbm_store(db, db_key, db_value, DBM_REPLACE) != 0)
+            {
+                perror("Error storing data in database");
+                send(client_fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 23\r\n\r\nDatabase error occurred", INTERNAL_SERVER_ERROR_LENGTH, 0);
+                free(post_data_copy);
+                dbm_close(db);
+                return;
+            }
+        }
+        else
+        {
+            perror("Error parsing key-value pair");
+            send(client_fd, "HTTP/1.1 400 Bad Request\r\nContent-Length: 16\r\n\r\nMalformed request", BAD_REQUEST_ERROR_LENGTH, 0);
+            free(post_data_copy);
             dbm_close(db);
-            free(data_copy);
             return;
         }
-
-        token = strtok_r(NULL, "&", &saveptr);
     }
-    free(data_copy);
-    dbm_close(db);
 
     // Send response back to client
     const char *response = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello POST!";
     send(client_fd, response, strlen(response), 0);
+
+    // Free the allocated memory for post_data_copy
+    free(post_data_copy);
+
+    // Close the database
+    dbm_close(db);
 }
 
 // Handle HTTP request function
@@ -225,15 +263,15 @@ void *handle_connection(void *arg)
     {
         buffer[bytes_received] = '\0';
 
-        pthread_mutex_lock(&env->client_list_mutex);
+        pthread_mutex_lock(&env->client_list_mutex);    // Lock access to shared data
         handle_http_request(client_fd, buffer);
-        pthread_mutex_unlock(&env->client_list_mutex);
+        pthread_mutex_unlock(&env->client_list_mutex);    // Unlock access to shared data
     }
 
-    pthread_mutex_lock(&env->client_list_mutex);
+    pthread_mutex_lock(&env->client_list_mutex);    // Lock access to shared data
     close(client_fd);
     printf("Client %d disconnected.\n", client_fd);
-    pthread_mutex_unlock(&env->client_list_mutex);
+    pthread_mutex_unlock(&env->client_list_mutex);    // Unlock access to shared data
 
     return NULL;
 }
@@ -309,9 +347,9 @@ int main(void)
 
         if(env.num_clients < MAX_CLIENTS)
         {
-            pthread_mutex_lock(&env.client_list_mutex);
+            pthread_mutex_lock(&env.client_list_mutex);    // Lock access to shared data
             env.client_sockets[env.num_clients++] = client_fd;
-            pthread_mutex_unlock(&env.client_list_mutex);
+            pthread_mutex_unlock(&env.client_list_mutex);    // Unlock access to shared data
 
             pthread_t thread;
             pthread_create(&thread, NULL, handle_connection, (void *)&client_fd);
