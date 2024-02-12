@@ -211,7 +211,6 @@ void send_file(int client_socket)
     if(bytes_sent == -1)
     {
         perror("Error sending response to client");
-        close(client_socket);
         return;
     }
 
@@ -220,7 +219,6 @@ void send_file(int client_socket)
     if(html_file == NULL)
     {
         perror("Error opening HTML file");
-        close(client_socket);
         return;
     }
 
