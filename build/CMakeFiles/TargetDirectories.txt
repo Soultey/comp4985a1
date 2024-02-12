@@ -1,0 +1,4 @@
+/Users/alex/Documents/comp4981a1/comp4985a1/build/CMakeFiles/main.dir
+/Users/alex/Documents/comp4981a1/comp4985a1/build/CMakeFiles/format.dir
+/Users/alex/Documents/comp4981a1/comp4985a1/build/CMakeFiles/edit_cache.dir
+/Users/alex/Documents/comp4981a1/comp4985a1/build/CMakeFiles/rebuild_cache.dir
