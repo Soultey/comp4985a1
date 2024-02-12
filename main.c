@@ -1,10 +1,8 @@
 #include <arpa/inet.h>
-#include <ndbm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>  // Include the <fcntl.h> header for file control options
 
 #define BUFFER_SIZE 1024
 #define TEN 10
