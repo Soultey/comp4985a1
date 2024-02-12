@@ -28,7 +28,6 @@ void handle_client(int client_socket);
 void handle_post_request(int client_socket, const char *buffer);
 void send_response(int client_socket, const char *response);
 void send_file(int client_socket);
-void retrieve_data_and_send_response(int client_socket, const char *username);
 
 // Start the server
 void start_server(const char *server_ip, int server_port)
@@ -135,7 +134,6 @@ void handle_client(int client_socket)
             sscanf(username_start, "%99[^ ]", username);
 
             // Call a function to retrieve data from the database based on the username
-            retrieve_data_and_send_response(client_socket, username);
         }
         else
         {
@@ -166,76 +164,6 @@ void handle_client(int client_socket)
     close(client_socket);
 }
 
-void retrieve_data_and_send_response(int client_socket, const char *username)
-{
-    DBM  *db;
-    datum key;
-    datum value;
-    char *username_copy = NULL;
-
-    // Open the NDBM database
-    db = dbm_open("database.db", O_RDONLY, RWMODE);
-
-    if(!db)
-    {
-        perror("Error opening database");
-        send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
-        return;
-    }
-
-    // Allocate memory for the username copy (include space for null terminator)
-    username_copy = (char *)malloc(strlen(username) + 1);
-    if(username_copy == NULL)
-    {
-        perror("Error allocating memory");
-        send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
-        dbm_close(db);
-        return;
-    }
-
-    // Copy the username to avoid accessing the original string after potential deallocation
-    strcpy(username_copy, username);
-
-    // Lookup the username in the database
-    key.dptr  = username_copy;    // Use the copy
-    key.dsize = strlen(username_copy);
-    value     = dbm_fetch(db, key);
-
-    // Check if the username was found
-    if(value.dptr)
-    {
-        // Calculate the length of the response message
-        size_t response_length = strlen("HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nUsername: ") + strlen(username) + strlen("\nPassword: ") + strlen((char *)value.dptr) + 1;
-
-        // Allocate memory for the response
-        char *response = (char *)malloc(response_length);
-        if(response == NULL)
-        {
-            perror("Error allocating memory");
-            send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
-            return;
-        }
-
-        // Construct the response message
-        snprintf(response, response_length, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nUsername: %s\nPassword: %s\n", username, (char *)value.dptr);
-
-        // Send the response
-        send_response(client_socket, response);
-
-        // Free dynamically allocated memory
-        free(response);
-    }
-    else
-    {
-        // Username not found
-        send_response(client_socket, "HTTP/1.0 404 Not Found\r\n\r\n");
-    }
-
-    dbm_close(db);
-
-    // Free the allocated memory for the username copy
-    free(username_copy);
-}
 
 void handle_post_request(int client_socket, const char *buffer)
 {
@@ -247,9 +175,6 @@ void handle_post_request(int client_socket, const char *buffer)
     char *post_data_start = strstr(buffer, "\r\n\r\n");
     if(post_data_start != NULL)
     {
-        DBM  *db;
-        datum key;
-        datum value;
 
         const char response_header[] = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
 
