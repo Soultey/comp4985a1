@@ -163,14 +163,14 @@ void handle_client(int client_socket)
 
 void handle_post_request(int client_socket, const char *buffer)
 {
-    // Declare variables at the beginning
-    char username[HUNDO];
-    char password[HUNDO];
-
     // Extract POST data
     char *post_data_start = strstr(buffer, "\r\n\r\n");
     if(post_data_start != NULL)
     {
+
+                // Declare variables at the beginning
+                char username[HUNDO];
+                char password[HUNDO];
 
         const char response_header[] = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
 
