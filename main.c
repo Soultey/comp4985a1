@@ -259,31 +259,6 @@ void handle_post_request(int client_socket, const char *buffer)
         // Parse POST data to extract parameters
         sscanf(post_data_start, "username=%99[^&]&password=%99s", username, password);
 
-        // Open the NDBM database
-        db = dbm_open("database.db", O_CREAT | O_RDWR, RWMODE);
-        if(!db)
-        {
-            perror("Error opening database");
-            send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
-            return;
-        }
-
-        // Store the username and password in the database
-        key.dptr    = username;
-        key.dsize   = strlen(username);
-        value.dptr  = password;
-        value.dsize = strlen(password);
-
-        if(dbm_store(db, key, value, DBM_REPLACE) != 0)
-        {
-            perror("Error storing data in database");
-            send_response(client_socket, "HTTP/1.0 500 Internal Server Error\r\n\r\n");
-            dbm_close(db);
-            return;
-        }
-
-        dbm_close(db);
-
         // Send confirmation response
         send_response(client_socket, response_header);
     }
