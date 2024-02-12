@@ -230,7 +230,6 @@ void send_file(int client_socket)
         {
             perror("Error sending response to client");
             fclose(html_file);
-            close(client_socket);
             return;
         }
     }
