@@ -7,7 +7,7 @@
 #define BUFFER_SIZE 1024
 #define TEN 10
 #define FIVE 5
-#define HTML_FILE "../comp4985a1/index.html"
+#define HTML_FILE "../comp4981a1/index.html"
 #define HUNDO 100
 
 #ifndef SOCK_CLOEXEC
@@ -215,7 +215,7 @@ void send_file(int client_socket)
     }
 
     // Open the HTML file
-    html_file = fopen(HTML_FILE, "re");    // Use "r" instead of "re"
+    html_file = fopen(HTML_FILE, "r");    // Use "r" instead of "re"
     if(html_file == NULL)
     {
         perror("Error opening HTML file");
