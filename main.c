@@ -7,7 +7,7 @@
 #define BUFFER_SIZE 1024
 #define TEN 10
 #define FIVE 5
-#define HTML_FILE "../comp4981a1/index.html"
+#define HTML_FILE "../index.html"
 #define HUNDO 100
 
 #ifndef SOCK_CLOEXEC
