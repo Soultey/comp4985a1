@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,22 +18,55 @@
     #pragma GCC diagnostic pop
 #endif
 
+struct ThreadArgs
+{
+    int client_socket;
+};
+
 // Function prototypes
-void start_server(const char *server_ip, int server_port) __attribute__((noreturn));
-int  create_server_socket(const char *server_ip, int server_port);
-void accept_client_connections(int server_socket) __attribute__((noreturn));
-void handle_client(int client_socket);
-void send_head_response(int client_socket);
-void handle_post_request(int client_socket, const char *buffer);
-void send_response(int client_socket, const char *response);
-void send_file(int client_socket);
+void  start_server(const char *server_ip, int server_port) __attribute__((noreturn));
+int   create_server_socket(const char *server_ip, int server_port);
+void *client_handler(void *args);
+void  send_head_response(int client_socket);
+void  handle_post_request(int client_socket, const char *buffer);
+void  send_response(int client_socket, const char *response);
+void  send_file(int client_socket);
 
 // Start the server
 void start_server(const char *server_ip, int server_port)
 {
     int server_socket = create_server_socket(server_ip, server_port);
     printf("Server listening on port %d...\n", server_port);
-    accept_client_connections(server_socket);
+
+    while(1)
+    {
+        struct sockaddr_in client_address;
+        pthread_t          tid;
+        struct ThreadArgs *args;
+
+        socklen_t client_address_len = sizeof(client_address);
+        int       client_socket      = accept(server_socket, (struct sockaddr *)&client_address, &client_address_len);
+        if(client_socket == -1)
+        {
+            perror("Accept failed");
+            continue;
+        }
+        printf("Client connected\n");
+
+        // Create a new thread to handle the client connection
+
+        args = malloc(sizeof(struct ThreadArgs));
+        if(args == NULL)
+        {
+            perror("Memory allocation failed");
+            close(client_socket);
+            continue;
+        }
+        args->client_socket = client_socket;
+
+        pthread_create(&tid, NULL, client_handler, args);
+        pthread_detach(tid);
+    }
 }
 
 // Create and bind server socket
@@ -72,37 +106,19 @@ int create_server_socket(const char *server_ip, int server_port)
     return server_socket;
 }
 
-// Accept client connections
-void accept_client_connections(int server_socket)
-{
-    while(1)
-    {
-        int                client_socket;
-        struct sockaddr_in client_address;
-        socklen_t          client_address_len;
-
-        client_address_len = sizeof(client_address);
-
-        // Accept a client connection
-        client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_address_len);
-        if(client_socket == -1)
-        {
-            perror("Accept failed");
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Client connected\n");
-
-        // Handle client request
-        handle_client(client_socket);
-    }
-}
-
-// Handle client request
-void handle_client(int client_socket)
+// Client handler thread function
+void *client_handler(void *args)
 {
     char    buffer[BUFFER_SIZE];
     ssize_t bytes_received;
+    int     client_socket;
+
+    struct ThreadArgs *threadArgs;
+
+    threadArgs = (struct ThreadArgs *)args;
+
+    client_socket = threadArgs->client_socket;
+    free(args);    // Free the memory allocated for the argument
 
     bytes_received = read(client_socket, buffer, sizeof(buffer) - 1);
 
@@ -110,7 +126,8 @@ void handle_client(int client_socket)
     {
         // Handle read error or closed socket
         printf("Nothing received from client\n");
-        return;
+        close(client_socket);
+        return NULL;
     }
 
     // Null-terminate the received data
@@ -164,6 +181,7 @@ void handle_client(int client_socket)
 
     // Close the client socket
     close(client_socket);
+    return NULL;
 }
 
 void send_head_response(int client_socket)
