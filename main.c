@@ -215,7 +215,7 @@ void send_file(int client_socket)
     }
 
     // Open the HTML file
-    html_file = fopen(HTML_FILE, "r");    // Use "r" instead of "re"
+    html_file = fopen(HTML_FILE, "e");    // Use "r" instead of "re"
     if(html_file == NULL)
     {
         perror("Error opening HTML file");
