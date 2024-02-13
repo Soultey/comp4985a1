@@ -22,6 +22,7 @@ void start_server(const char *server_ip, int server_port) __attribute__((noretur
 int  create_server_socket(const char *server_ip, int server_port);
 void accept_client_connections(int server_socket) __attribute__((noreturn));
 void handle_client(int client_socket);
+void send_head_response(int client_socket);
 void handle_post_request(int client_socket, const char *buffer);
 void send_response(int client_socket, const char *response);
 void send_file(int client_socket);
@@ -118,8 +119,8 @@ void handle_client(int client_socket)
     // Print the received HTTP request
     printf("Received HTTP request:\n%s\n", buffer);
 
-    // Check if it's a GET request
-    if(strstr(buffer, "GET") == buffer)
+    // Check if it's a GET or HEAD request
+    if(strstr(buffer, "GET") == buffer || strstr(buffer, "HEAD") == buffer)
     {
         // Check if the request is for retrieving data from the database
         if(strstr(buffer, "/retrieve/") != NULL)
@@ -133,23 +134,28 @@ void handle_client(int client_socket)
         }
         else
         {
-            // Handle regular GET request
-            send_file(client_socket);
+            // Handle regular GET or HEAD request
+            if(strstr(buffer, "HEAD") == buffer)
+            {
+                send_head_response(client_socket);    // Send only headers for HEAD requests
+            }
+            else
+            {
+                send_file(client_socket);    // Send file content for GET requests
+            }
         }
     }
     else if(strstr(buffer, "POST") == buffer)
     {
         handle_post_request(client_socket, buffer);
     }
-    else if(strstr(buffer, "HEAD") == buffer)
-    {
-        // Handle HEAD request
-    }
     else
     {
         // Unsupported HTTP method, send a 501 Not Implemented response
         const char *not_implemented_response = "HTTP/1.0 501 Not Implemented\r\n\r\n";
-        ssize_t     bytes_sent               = write(client_socket, not_implemented_response, strlen(not_implemented_response));
+        ssize_t     bytes_sent;
+
+        bytes_sent = write(client_socket, not_implemented_response, strlen(not_implemented_response));
         if(bytes_sent == -1)
         {
             perror("Error sending response to client");
@@ -160,6 +166,36 @@ void handle_client(int client_socket)
     close(client_socket);
 }
 
+void send_head_response(int client_socket)
+{
+    FILE   *html_file = fopen(HTML_FILE, "re");
+    long    content_length;
+    char    response_header[BUFFER_SIZE];
+    ssize_t bytes_sent;
+
+    if(html_file == NULL)
+    {
+        perror("Error opening HTML file");
+        return;
+    }
+
+    fseek(html_file, 0, SEEK_END);
+    content_length = ftell(html_file);
+    fseek(html_file, 0, SEEK_SET);
+
+    fclose(html_file);
+
+    snprintf(response_header, sizeof(response_header), "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: %ld\r\n\r\n", content_length);
+
+    bytes_sent = write(client_socket, response_header, strlen(response_header));
+    if(bytes_sent == -1)
+    {
+        perror("Error sending response to client");
+        return;
+    }
+
+    printf("Response sent:\n%s", response_header);
+}
 
 void handle_post_request(int client_socket, const char *buffer)
 {
@@ -167,10 +203,9 @@ void handle_post_request(int client_socket, const char *buffer)
     char *post_data_start = strstr(buffer, "\r\n\r\n");
     if(post_data_start != NULL)
     {
-
-                // Declare variables at the beginning
-                char username[HUNDO];
-                char password[HUNDO];
+        // Declare variables at the beginning
+        char username[HUNDO];
+        char password[HUNDO];
 
         const char response_header[] = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
 
